@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import 'react-pdf/dist/esm/Page/AnnotationLayer.css';
 import 'react-pdf/dist/esm/Page/TextLayer.css';
+import { generateImageFromText } from '../utils/stabilityApi';
 
 // Set up PDF.js worker using local file in public directory
 pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
@@ -20,6 +21,10 @@ const PDFReader = () => {
   const [popup, setPopup] = useState({ visible: false, x: 0, y: 0 });
   const [pendingSelection, setPendingSelection] = useState('');
   const [pendingRect, setPendingRect] = useState(null);
+  const [highlightImages, setHighlightImages] = useState({});
+  const [imageLoading, setImageLoading] = useState({});
+  const [imageError, setImageError] = useState({});
+  const [modalImage, setModalImage] = useState(null);
 
   // Check if worker is loaded
   useEffect(() => {
@@ -141,10 +146,17 @@ const PDFReader = () => {
     setSelectedText('');
   };
 
-  const generateImage = (highlight) => {
-    // This will be implemented later with AI image generation
-    console.log('Generating image for:', highlight.text);
-    alert(`Image generation for: "${highlight.text}" - This feature will be implemented with AI!`);
+  const generateImage = async (highlight) => {
+    setImageLoading(prev => ({ ...prev, [highlight.id]: true }));
+    setImageError(prev => ({ ...prev, [highlight.id]: null }));
+    try {
+      const img = await generateImageFromText(highlight.text);
+      setHighlightImages(prev => ({ ...prev, [highlight.id]: img }));
+    } catch (err) {
+      setImageError(prev => ({ ...prev, [highlight.id]: err.message }));
+    } finally {
+      setImageLoading(prev => ({ ...prev, [highlight.id]: false }));
+    }
   };
 
   const retryLoad = () => {
@@ -334,33 +346,69 @@ const PDFReader = () => {
                   No highlights yet. Select text in the PDF to create highlights.
                 </p>
               ) : (
-                <div className="space-y-3">
+                <div className="space-y-4">
                   {highlights
                     .filter(h => h.page === pageNumber)
                     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
                     .map((highlight) => (
                       <div
                         key={highlight.id}
-                        className="p-3 bg-yellow-50 border border-yellow-200 rounded-lg hover:bg-yellow-100 transition-colors"
+                        className="bg-white rounded-xl shadow hover:shadow-lg transition-shadow p-4 flex flex-col gap-2 border border-gray-100"
                       >
-                        <p className="text-sm text-gray-600 mb-1">
-                          Page {highlight.page} • {new Date(highlight.timestamp).toLocaleTimeString()}
-                        </p>
-                        <p className="text-gray-800 mb-2">"{highlight.text}"</p>
-                        <div className="flex gap-2">
-                          <button
-                            onClick={() => generateImage(highlight)}
-                            className="bg-green-500 hover:bg-green-600 text-white text-xs px-2 py-1 rounded transition-colors"
-                          >
-                            Generate Image
-                          </button>
-                          <button
-                            onClick={() => removeHighlight(highlight.id)}
-                            className="bg-red-500 hover:bg-red-600 text-white text-xs px-2 py-1 rounded transition-colors"
-                          >
-                            Remove
-                          </button>
+                        <div className="flex items-center justify-between mb-1">
+                          <span className="text-xs text-gray-400">
+                            Page {highlight.page} • {new Date(highlight.timestamp).toLocaleTimeString()}
+                          </span>
+                          <div className="flex gap-1">
+                            <button
+                              onClick={() => generateImage(highlight)}
+                              className={`flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium transition-colors ${imageLoading[highlight.id] ? 'bg-green-300 text-white' : 'bg-green-100 text-green-700 hover:bg-green-200'}`}
+                              disabled={imageLoading[highlight.id]}
+                              title="Generate Image"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>
+                              {imageLoading[highlight.id] ? 'Generating...' : 'Image'}
+                            </button>
+                            <button
+                              onClick={() => removeHighlight(highlight.id)}
+                              className="flex items-center gap-1 px-3 py-1 rounded-full text-xs font-medium bg-red-100 text-red-700 hover:bg-red-200 transition-colors"
+                              title="Remove Highlight"
+                            >
+                              <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
+                              Remove
+                            </button>
+                          </div>
                         </div>
+                        <div className="text-gray-800 text-sm leading-relaxed whitespace-pre-line mb-2">{highlight.text}</div>
+                        <hr className="my-2 border-gray-200" />
+                        {imageError[highlight.id] && (
+                          <div className="text-xs text-red-500 mb-1">{imageError[highlight.id]}</div>
+                        )}
+                        {highlightImages[highlight.id] && (
+                          <div className="relative group">
+                            <img
+                              src={highlightImages[highlight.id]}
+                              alt={`Generated for: ${highlight.text}`}
+                              className="w-full rounded-lg shadow-md cursor-pointer transition-transform duration-200 group-hover:scale-105"
+                              style={{ maxHeight: 180, objectFit: 'contain' }}
+                              title="Click to enlarge"
+                              onClick={() => setModalImage({ src: highlightImages[highlight.id], alt: highlight.text })}
+                            />
+                            <button
+                              className="absolute bottom-2 right-2 bg-white bg-opacity-90 rounded-full p-1 shadow hover:scale-110 transition-transform"
+                              title="Download image"
+                              onClick={() => {
+                                const a = document.createElement('a');
+                                a.href = highlightImages[highlight.id];
+                                a.download = `ai-image-${highlight.id}.png`;
+                                a.click();
+                              }}
+                              style={{ zIndex: 2 }}
+                            >
+                              <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2M7 10l5 5m0 0l5-5m-5 5V4" /></svg>
+                            </button>
+                          </div>
+                        )}
                       </div>
                     ))}
                 </div>
@@ -369,6 +417,38 @@ const PDFReader = () => {
           </div>
         </div>
       </div>
+
+      {modalImage && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-70" onClick={() => setModalImage(null)}>
+          <div className="bg-white rounded-lg shadow-lg p-4 max-w-full max-h-full flex flex-col items-center relative" onClick={e => e.stopPropagation()}>
+            <button
+              className="absolute top-2 right-2 text-gray-600 hover:text-red-500 text-2xl font-bold"
+              onClick={() => setModalImage(null)}
+              title="Close"
+            >
+              &times;
+            </button>
+            <img
+              src={modalImage.src}
+              alt={modalImage.alt}
+              className="max-w-[90vw] max-h-[80vh] rounded border border-gray-300"
+              style={{ objectFit: 'contain' }}
+            />
+            <div className="mt-2 text-gray-700 text-center text-sm max-w-lg">{modalImage.alt}</div>
+            <button
+              className="mt-4 bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded"
+              onClick={() => {
+                const a = document.createElement('a');
+                a.href = modalImage.src;
+                a.download = 'ai-image-full.png';
+                a.click();
+              }}
+            >
+              Download Image
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
